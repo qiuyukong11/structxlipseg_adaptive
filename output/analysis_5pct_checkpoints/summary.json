@@ -1,0 +1,52 @@
+{
+  "structxlip_sketchy_5pct_no_3loss": {
+    "checkpoint": "output/structxlip_sketchy_5pct_no_3loss/trained_models/seed42/CLIPSeg_structxlip_ViT-B-16_best_dice.pth",
+    "log": "output/structxlip_sketchy_5pct_no_3loss/trained_models/seed42/log.txt",
+    "manifest": "output/structxlip_sketchy_5pct_no_3loss/seg_results/seed42/CLIPSeg_structxlip_ViT-B-16_best_dice/manifest.csv",
+    "figures": {
+      "training_curves": "output/analysis_5pct_checkpoints/structxlip_sketchy_5pct_no_3loss/training_curves.png",
+      "embedding_space": "output/analysis_5pct_checkpoints/structxlip_sketchy_5pct_no_3loss/embedding_space.png",
+      "seg_success_failure": "output/analysis_5pct_checkpoints/structxlip_sketchy_5pct_no_3loss/seg_success_failure.png"
+    },
+    "embedding_metrics": {
+      "mean_cos": -0.0626392737030983,
+      "i2t_r1": 0.08333333333333334,
+      "t2i_r1": 0.08333333333333334,
+      "n": 1200,
+      "projection": "t-SNE"
+    },
+    "segmentation_dice": {
+      "samples": 3603,
+      "mean": 0.18498686024734962,
+      "median": 0.10153890407018554,
+      "best": 0.827145204094528,
+      "worst": 0.0
+    },
+    "loss_note": "Historical training logs contain total train loss, validation loss, and validation Dice only; component loss curves were not logged."
+  },
+  "structxlip_sketchy_5pct_with_3loss": {
+    "checkpoint": "output/structxlip_sketchy_5pct_with_3loss/trained_models/seed42/CLIPSeg_structxlip_ViT-B-16_best_dice.pth",
+    "log": "output/structxlip_sketchy_5pct_with_3loss/trained_models/seed42/log.txt",
+    "manifest": "output/structxlip_sketchy_5pct_with_3loss/seg_results/seed42/CLIPSeg_structxlip_ViT-B-16_best_dice/manifest.csv",
+    "figures": {
+      "training_curves": "output/analysis_5pct_checkpoints/structxlip_sketchy_5pct_with_3loss/training_curves.png",
+      "embedding_space": "output/analysis_5pct_checkpoints/structxlip_sketchy_5pct_with_3loss/embedding_space.png",
+      "seg_success_failure": "output/analysis_5pct_checkpoints/structxlip_sketchy_5pct_with_3loss/seg_success_failure.png"
+    },
+    "embedding_metrics": {
+      "mean_cos": 0.10915444791316986,
+      "i2t_r1": 0.08333333333333334,
+      "t2i_r1": 0.08333333333333334,
+      "n": 1200,
+      "projection": "t-SNE"
+    },
+    "segmentation_dice": {
+      "samples": 3603,
+      "mean": 0.20452963947747552,
+      "median": 0.13330850865760566,
+      "best": 0.8699902248289345,
+      "worst": 0.0
+    },
+    "loss_note": "Historical training logs contain total train loss, validation loss, and validation Dice only; component loss curves were not logged."
+  }
+}

@@ -1,0 +1,57 @@
+DATASET:
+  NAME: structxlip_sketchy_5pct_zero_loss_matched
+  TRAIN_JSON: /mnt/data/zruan/kqy/pami/segmentation/structxlip_seg_v2/data/SKETCHY_structxlip_seg_train_5pct_seed42.json
+  VAL_JSON: ""
+  DATA_ROOT: ""
+  AUTO_VAL_RATIO: 0.1
+  VAL_SPLIT_SEED: 42
+  SIZE: 224
+  HFLIP_PROB: 0.0
+  MIN_SIMILARITY: null
+  USE_ORIGINAL_CAPTION_PREFIX: false
+
+TRAIN:
+  BATCH_SIZE: 16
+  NUM_EPOCHS: 20
+  LEARNING_RATE: 0.0005
+  DICE_WEIGHT: 0.5
+  CE_WEIGHT: 0.5
+  USE_CLIP_LOSS: true
+  CLIP_WEIGHT: 0.1
+  MAX_POS_WEIGHT: 20.0
+  WORKERS: 4
+  GRAD_CLIP_NORM: 1.0
+
+TEST:
+  THRESHOLD: 0.5
+  NUM_SAMPLES: 1
+  USE_LATEST: false
+
+MODEL:
+  CLIP_MODEL: structxlip
+  BACKBONE: "ViT-B/16"
+  MAX_TOKEN_LEN: 248
+  ADAPTER_DIM: 256
+  NUM_UPSCALE: 2
+  BETA: 2.35
+  GATE_INIT: 0.0
+  LAYERS: [1,2,3,4,5,6,7,8,9,10]
+  TEMPERATURE: 0.2
+  DEVICE: "cuda"
+
+STRUCTXLIP:
+  LAMBDA_STRUCTURE_TEXT: 0.0
+  LAMBDA_RGB_STRUCTURE_CONSISTENCY: 0.0
+  LAMBDA_CHUNK_ALIGN: 0.0
+  STRUCTURE_IMAGE_FIELD: filename_canny
+  CHUNK_TOP_K: 3
+  CHUNK_TAU: 0.07
+  CHUNK_BASE_WINDOW: 3
+  CHUNK_STRIDE: 1
+  CHUNK_MAX_SPANS: 64
+  REMOVE_COLORS: false
+  REMOVE_MATERIALS: false
+  REMOVE_TEXTURES: false
+
+output_dir: output
+seed: 42
