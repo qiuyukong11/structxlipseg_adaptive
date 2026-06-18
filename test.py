@@ -130,6 +130,11 @@ def to_python_int(value):
 def main():
     cfg = get_arguments()
     cfg.DATASET.NAME = dataset_name_with_percentage(cfg)
+    if cfg.MODEL.CLIP_MODEL == "structxlip":
+        cfg.DATASET.NAME = cfg.DATASET.NAME + f"_st_{getattr(cfg.STRUCTXLIP, 'LAMBDA_STRUCTURE_TEXT', 0.0)}_rs_{getattr(cfg.STRUCTXLIP, 'LAMBDA_RGB_STRUCTURE_CONSISTENCY', 0.0)}_chunk_{getattr(cfg.STRUCTXLIP, 'LAMBDA_CHUNK_ALIGN', 0.0)}"
+        tau_cfg = cfg_get(cfg_get(cfg, "STRUCTXLIP", None), "LEARNABLE_TAU_LOSS", None)
+        if bool(cfg_get(tau_cfg, "ENABLED", False)):
+            cfg.DATASET.NAME = cfg.DATASET.NAME + f"_learnable_tau_w{float(cfg_get(tau_cfg, 'OVERALL_WEIGHT', 1.0)):g}"
 
     if cfg.seed >= 0:
         print(f"Setting fixed seed: {cfg.seed}")

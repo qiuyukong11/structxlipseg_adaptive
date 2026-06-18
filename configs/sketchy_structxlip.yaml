@@ -53,5 +53,38 @@ STRUCTXLIP:
   REMOVE_MATERIALS: false
   REMOVE_TEXTURES: false
 
+  ADAPTIVE_V2:
+    ENABLED: false
+    EPS: 1.0e-8
+
+  ADAPTIVE_V3:
+    ENABLED: false
+    EPS: 1.0e-8
+    ALPHA_MIN: 0.05
+    ALPHA_MAX: 0.30
+    TAU: 10.0
+  ADAPTIVE_V4:
+    ENABLED: false
+    EPS: 1.0e-8
+    ALPHA_MIN: 0.08
+    ALPHA_MAX: 0.35
+  ADAPTIVE_V6:
+    ENABLED: false
+    GAMMA: 0.1
+    BETA: 0.9
+    ETA: 0.5
+    EPS: 1.0e-8
+    VAL_GRAD_BATCHES: 1
+
+  ADAPTIVE_V7:
+    ENABLED: false
+    GAMMA: 0.1
+    BETA: 0.9
+    ETA: 0.05
+    REWARD_EMA: 0.8
+    LOGIT_CLIP: 1.0
+    LAMBDA_MIN: 0.15
+    EPS: 1.0e-8
+    VAL_GRAD_BATCHES: 1
 output_dir: outputs/clipseg_structxlip
 seed: 42

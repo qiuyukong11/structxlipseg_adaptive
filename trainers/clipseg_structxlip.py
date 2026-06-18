@@ -208,6 +208,18 @@ class CustomCLIP(nn.Module):
         self.lambda_scribble_text = float(getattr(struct_cfg, "LAMBDA_STRUCTURE_TEXT", 0.0))
         self.lambda_rgb_scribble = float(getattr(struct_cfg, "LAMBDA_RGB_STRUCTURE_CONSISTENCY", 0.0))
         self.lambda_chunk = float(getattr(struct_cfg, "LAMBDA_CHUNK_ALIGN", 0.0))
+        adaptive_v2_cfg = getattr(struct_cfg, "ADAPTIVE_V2", None)
+        self.adaptive_v2_enabled = bool(getattr(adaptive_v2_cfg, "ENABLED", False))
+        adaptive_v3_cfg = getattr(struct_cfg, "ADAPTIVE_V3", None)
+        self.adaptive_v3_enabled = bool(getattr(adaptive_v3_cfg, "ENABLED", False))
+        adaptive_v4_cfg = getattr(struct_cfg, "ADAPTIVE_V4", None)
+        self.adaptive_v4_enabled = bool(getattr(adaptive_v4_cfg, "ENABLED", False))
+        adaptive_v6_cfg = getattr(struct_cfg, "ADAPTIVE_V6", None)
+        self.adaptive_v6_enabled = bool(getattr(adaptive_v6_cfg, "ENABLED", False))
+        adaptive_v7_cfg = getattr(struct_cfg, "ADAPTIVE_V7", None)
+        self.adaptive_v7_enabled = bool(getattr(adaptive_v7_cfg, "ENABLED", False))
+        learnable_tau_cfg = getattr(struct_cfg, "LEARNABLE_TAU_LOSS", None)
+        self.learnable_tau_loss_enabled = bool(getattr(learnable_tau_cfg, "ENABLED", False))
         self.chunk_tau = float(getattr(struct_cfg, "CHUNK_TAU", 0.07))
         self.chunk_base_window = int(getattr(struct_cfg, "CHUNK_BASE_WINDOW", 3))
         self.chunk_stride = int(getattr(struct_cfg, "CHUNK_STRIDE", 1))
@@ -361,7 +373,16 @@ class CustomCLIP(nn.Module):
         else:
             filtered_text_features = text_features
 
-        if structure_image is not None and (self.lambda_scribble_text != 0 or self.lambda_rgb_scribble != 0):
+        token_features_for_loss = self.text_model.ln_final(text_tokens).type(self.dtype)
+        token_features_for_loss = token_features_for_loss @ self.text_model.text_projection
+        structure_embeds_for_loss = image_embeds
+        edge_local_embeds_for_loss = image_embeds.unsqueeze(1)
+
+        compute_loss_st = self.learnable_tau_loss_enabled or self.adaptive_v2_enabled or self.adaptive_v3_enabled or self.adaptive_v4_enabled or self.adaptive_v6_enabled or self.adaptive_v7_enabled or self.lambda_scribble_text != 0
+        compute_loss_rs = self.learnable_tau_loss_enabled or self.adaptive_v2_enabled or self.adaptive_v3_enabled or self.adaptive_v4_enabled or self.adaptive_v6_enabled or self.adaptive_v7_enabled or self.lambda_rgb_scribble != 0
+        compute_loss_chunk = self.learnable_tau_loss_enabled or self.adaptive_v2_enabled or self.adaptive_v3_enabled or self.adaptive_v4_enabled or self.adaptive_v6_enabled or self.adaptive_v7_enabled or self.lambda_chunk != 0
+
+        if structure_image is not None and (compute_loss_st or compute_loss_rs):
             if has_structure is None:
                 has_org_s = torch.ones(bs, dtype=torch.bool, device=device)
             else:
@@ -371,18 +392,19 @@ class CustomCLIP(nn.Module):
                 _, _, structure_embeds = self.encode_text_image(
                     tokenized_prompts, text_prompts, structure_image, return_image_embed=True
                 )
-                if self.lambda_scribble_text != 0:
+                structure_embeds_for_loss = structure_embeds
+                if compute_loss_st:
                     img = F.normalize(structure_embeds[has_org_s] + eps, dim=-1)
                     txt = F.normalize(filtered_text_features[has_org_s] + eps, dim=-1)
                     loss_st = clip_loss(self.logit_scale.exp().detach() * (img @ txt.t()))
-                if self.lambda_rgb_scribble != 0:
+                if compute_loss_rs:
                     loss_rs = F.cosine_embedding_loss(
                         F.normalize(image_embeds[has_org_s] + eps, dim=-1),
                         F.normalize(structure_embeds[has_org_s] + eps, dim=-1),
                         torch.ones(has_org_s.sum(), device=device),
                     )
 
-        if self.lambda_chunk != 0 and edge_images is not None and edge_valid_mask is not None:
+        if compute_loss_chunk and edge_images is not None and edge_valid_mask is not None:
             if edge_images.dim() == 5:
                 k = edge_images.shape[1]
                 edge_flat = edge_images.reshape(bs * k, *edge_images.shape[2:])
@@ -391,6 +413,7 @@ class CustomCLIP(nn.Module):
                 _, _, edge_seg_embeds_flat = self.encode_text_image(
                     edge_tokenized, edge_prompts, edge_flat, return_image_embed=True
                 )
+                edge_local_embeds_for_loss = edge_seg_embeds_flat.reshape(bs, k, -1)
                 edge_all = F.normalize(edge_seg_embeds_flat + eps, dim=-1)
                 valid_all_mask = edge_valid_mask.reshape(-1).to(device=device).bool()
 
@@ -460,6 +483,23 @@ class CustomCLIP(nn.Module):
             "loss_rs": loss_rs.detach(),
             "loss_chunk_align": loss_chunk_align.detach(),
         }
+        self.last_structxlip_loss_tensors = {
+            "loss_st": loss_st,
+            "loss_rs": loss_rs,
+            "loss_chunk_align": loss_chunk_align,
+        }
+        self.last_structxlip_loss_inputs = {
+            "f_color": image_embeds,
+            "f_edge": structure_embeds_for_loss,
+            "f_local_edge": edge_local_embeds_for_loss,
+            "f_tokens": token_features_for_loss,
+            "t_struct": filtered_text_features,
+        }
+        self.last_structxlip_lambdas = {
+            "lambda_st": self.lambda_scribble_text,
+            "lambda_rs": self.lambda_rgb_scribble,
+            "lambda_chunk": self.lambda_chunk,
+        }
         return (
             self.lambda_scribble_text * loss_st
             + self.lambda_rgb_scribble * loss_rs
@@ -493,7 +533,24 @@ class CustomCLIP(nn.Module):
 
         if self.training:
             if not return_clip_loss:
-                return seg_logits, seg_logits.new_zeros(())
+                zero = seg_logits.new_zeros(())
+                self.last_structxlip_losses = {
+                    "loss_st": zero.detach(),
+                    "loss_rs": zero.detach(),
+                    "loss_chunk_align": zero.detach(),
+                }
+                self.last_structxlip_loss_tensors = {
+                    "loss_st": zero,
+                    "loss_rs": zero,
+                    "loss_chunk_align": zero,
+                }
+                self.last_structxlip_loss_inputs = {}
+                self.last_structxlip_lambdas = {
+                    "lambda_st": self.lambda_scribble_text,
+                    "lambda_rs": self.lambda_rgb_scribble,
+                    "lambda_chunk": self.lambda_chunk,
+                }
+                return seg_logits, zero
 
             patch_logits = F.normalize(image_features, dim=-1, eps=1e-6)
             patch_mean = patch_logits.mean(dim=1)  # shape: (B, D)

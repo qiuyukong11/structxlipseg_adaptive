@@ -30,4 +30,8 @@ output/**/seg_results/
 output/**/gt_results/
 *.log
 
+output_*/
+analysis/
+abalation/
+
 data/SKETCHY_structxlip_seg_train_90pct_seed42.json

@@ -53,6 +53,55 @@ STRUCTXLIP:
   REMOVE_COLORS: false
   REMOVE_MATERIALS: false
   REMOVE_TEXTURES: false
+  ADAPTIVE_3LOSS:
+    ENABLED: false
+    BASE_ST: 0.05
+    BASE_RS: 0.02
+    BASE_CHUNK: 0.07
+    EPS: 1.0e-8
+  ADAPTIVE_V2:
+    ENABLED: false
+    EPS: 1.0e-8
   
+  ADAPTIVE_V3:
+    ENABLED: false
+    EPS: 1.0e-8
+    ALPHA_MIN: 0.05
+    ALPHA_MAX: 0.30
+    TAU: 10.0
+  ADAPTIVE_V4:
+    ENABLED: false
+    EPS: 1.0e-8
+    ALPHA_MIN: 0.08
+    ALPHA_MAX: 0.35
+  ADAPTIVE_V6:
+    ENABLED: false
+    GAMMA: 0.1
+    BETA: 0.9
+    ETA: 0.5
+    EPS: 1.0e-8
+    VAL_GRAD_BATCHES: 1
+
+  ADAPTIVE_V7:
+    ENABLED: false
+    GAMMA: 0.1
+    BETA: 0.9
+    ETA: 0.05
+    REWARD_EMA: 0.8
+    LOGIT_CLIP: 1.0
+    LAMBDA_MIN: 0.15
+    EPS: 1.0e-8
+    VAL_GRAD_BATCHES: 1
+
+  LEARNABLE_TAU_LOSS:
+    ENABLED: false
+    MAX_TAU_SCALE: 100.0
+    INIT_TEMPERATURE: 0.07
+    MIN_TEMPERATURE: 0.01
+    EPS: 1.0e-6
+    IGNORE_INDEX: -100
+    LR_MULT: 5.0
+    OVERALL_WEIGHT: 1.0
+    TAU_REG_WEIGHT: 0.0
 output_dir: output
 seed: 42

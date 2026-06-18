@@ -84,6 +84,11 @@ def matching_pairs_from_dirs(pred_dir, gt_dir):
 def main():
     cfg = get_arguments()
     cfg.DATASET.NAME = dataset_name_with_percentage(cfg)
+    if cfg.MODEL.CLIP_MODEL == "structxlip":
+        cfg.DATASET.NAME = cfg.DATASET.NAME + f"_st_{getattr(cfg.STRUCTXLIP, 'LAMBDA_STRUCTURE_TEXT', 0.0)}_rs_{getattr(cfg.STRUCTXLIP, 'LAMBDA_RGB_STRUCTURE_CONSISTENCY', 0.0)}_chunk_{getattr(cfg.STRUCTXLIP, 'LAMBDA_CHUNK_ALIGN', 0.0)}"
+        tau_cfg = getattr(getattr(cfg, "STRUCTXLIP", None), "LEARNABLE_TAU_LOSS", None)
+        if bool(getattr(tau_cfg, "ENABLED", False)):
+            cfg.DATASET.NAME = cfg.DATASET.NAME + f"_learnable_tau_w{float(getattr(tau_cfg, 'OVERALL_WEIGHT', 1.0)):g}"
 
     checkpoint_type = "latest" if cfg.TEST.USE_LATEST else "best_dice"
     run_name = f"{result_name(cfg)}_{checkpoint_type}"
