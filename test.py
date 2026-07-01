@@ -33,6 +33,9 @@ def get_arguments():
     parser.add_argument("--data_percentage", type=int, default=100, help="Percentage of data to use")
     parser.add_argument("--source_dataset", type=str, default="sketchy", help="Dataset name used when loading checkpoint")
     parser.add_argument("--output-dir", type=str, default="output", help="Output directory")
+    parser.add_argument("--weight-method", choices=("equal", "uncert", "dwa", "autol"), default=None)
+    parser.add_argument("--grad-method", choices=("none", "graddrop", "pcgrad", "cagrad"), default=None)
+    parser.add_argument("--all-loss-adaptive", action="store_true", help="Use all-loss adaptive output suffix.")
     parser.add_argument("opts", default=[], nargs=argparse.REMAINDER, help="modify config options")
     args = parser.parse_args()
     # args.config_file = "/mnt/data/zruan/kqy/pami/segmentation/structxlip_seg_v2/configs/sketchy_structxlipseg_100percent.yaml"
@@ -133,8 +136,20 @@ def main():
     if cfg.MODEL.CLIP_MODEL == "structxlip":
         cfg.DATASET.NAME = cfg.DATASET.NAME + f"_st_{getattr(cfg.STRUCTXLIP, 'LAMBDA_STRUCTURE_TEXT', 0.0)}_rs_{getattr(cfg.STRUCTXLIP, 'LAMBDA_RGB_STRUCTURE_CONSISTENCY', 0.0)}_chunk_{getattr(cfg.STRUCTXLIP, 'LAMBDA_CHUNK_ALIGN', 0.0)}"
         tau_cfg = cfg_get(cfg_get(cfg, "STRUCTXLIP", None), "LEARNABLE_TAU_LOSS", None)
+        gradbudget_cfg = cfg_get(cfg_get(cfg, "STRUCTXLIP", None), "ADAPTIVE_GRADBUDGET_ALIGN", None)
         if bool(cfg_get(tau_cfg, "ENABLED", False)):
             cfg.DATASET.NAME = cfg.DATASET.NAME + f"_learnable_tau_w{float(cfg_get(tau_cfg, 'OVERALL_WEIGHT', 1.0)):g}"
+        norm_balanced_cfg = cfg_get(cfg_get(cfg, "STRUCTXLIP", None), "ADAPTIVE_NORM_BALANCED", None)
+        gradnorm_cfg = cfg_get(cfg_get(cfg, "STRUCTXLIP", None), "ADAPTIVE_GRADNORM", None)
+        if bool(cfg_get(norm_balanced_cfg, "ENABLED", False)):
+            cfg.DATASET.NAME = cfg.DATASET.NAME + "_norm_balanced"
+        elif bool(cfg_get(gradnorm_cfg, "ENABLED", False)):
+            cfg.DATASET.NAME = cfg.DATASET.NAME + "_gradnorm"
+        elif bool(cfg_get(gradbudget_cfg, "ENABLED", False)):
+            cfg.DATASET.NAME = cfg.DATASET.NAME + "_gradbudget_align"
+        elif cfg_get(cfg, "weight_method", None) is not None and cfg_get(cfg, "grad_method", None) is not None:
+            adaptive_prefix = "_autolambda_allloss" if bool(cfg_get(cfg, "all_loss_adaptive", False)) else "_autolambda"
+            cfg.DATASET.NAME = cfg.DATASET.NAME + f"{adaptive_prefix}_{cfg.weight_method}_{cfg.grad_method}"
 
     if cfg.seed >= 0:
         print(f"Setting fixed seed: {cfg.seed}")

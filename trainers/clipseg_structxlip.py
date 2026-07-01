@@ -218,6 +218,12 @@ class CustomCLIP(nn.Module):
         self.adaptive_v6_enabled = bool(getattr(adaptive_v6_cfg, "ENABLED", False))
         adaptive_v7_cfg = getattr(struct_cfg, "ADAPTIVE_V7", None)
         self.adaptive_v7_enabled = bool(getattr(adaptive_v7_cfg, "ENABLED", False))
+        adaptive_gradnorm_cfg = getattr(struct_cfg, "ADAPTIVE_GRADNORM", None)
+        self.adaptive_gradnorm_enabled = bool(getattr(adaptive_gradnorm_cfg, "ENABLED", False))
+        adaptive_gradbudget_align_cfg = getattr(struct_cfg, "ADAPTIVE_GRADBUDGET_ALIGN", None)
+        self.adaptive_gradbudget_align_enabled = bool(getattr(adaptive_gradbudget_align_cfg, "ENABLED", False))
+        adaptive_norm_balanced_cfg = getattr(struct_cfg, "ADAPTIVE_NORM_BALANCED", None)
+        self.adaptive_norm_balanced_enabled = bool(getattr(adaptive_norm_balanced_cfg, "ENABLED", False))
         learnable_tau_cfg = getattr(struct_cfg, "LEARNABLE_TAU_LOSS", None)
         self.learnable_tau_loss_enabled = bool(getattr(learnable_tau_cfg, "ENABLED", False))
         self.chunk_tau = float(getattr(struct_cfg, "CHUNK_TAU", 0.07))
@@ -378,9 +384,9 @@ class CustomCLIP(nn.Module):
         structure_embeds_for_loss = image_embeds
         edge_local_embeds_for_loss = image_embeds.unsqueeze(1)
 
-        compute_loss_st = self.learnable_tau_loss_enabled or self.adaptive_v2_enabled or self.adaptive_v3_enabled or self.adaptive_v4_enabled or self.adaptive_v6_enabled or self.adaptive_v7_enabled or self.lambda_scribble_text != 0
-        compute_loss_rs = self.learnable_tau_loss_enabled or self.adaptive_v2_enabled or self.adaptive_v3_enabled or self.adaptive_v4_enabled or self.adaptive_v6_enabled or self.adaptive_v7_enabled or self.lambda_rgb_scribble != 0
-        compute_loss_chunk = self.learnable_tau_loss_enabled or self.adaptive_v2_enabled or self.adaptive_v3_enabled or self.adaptive_v4_enabled or self.adaptive_v6_enabled or self.adaptive_v7_enabled or self.lambda_chunk != 0
+        compute_loss_st = self.learnable_tau_loss_enabled or self.adaptive_norm_balanced_enabled or self.adaptive_gradnorm_enabled or self.adaptive_gradbudget_align_enabled or self.adaptive_v2_enabled or self.adaptive_v3_enabled or self.adaptive_v4_enabled or self.adaptive_v6_enabled or self.adaptive_v7_enabled or self.lambda_scribble_text != 0
+        compute_loss_rs = self.learnable_tau_loss_enabled or self.adaptive_norm_balanced_enabled or self.adaptive_gradnorm_enabled or self.adaptive_gradbudget_align_enabled or self.adaptive_v2_enabled or self.adaptive_v3_enabled or self.adaptive_v4_enabled or self.adaptive_v6_enabled or self.adaptive_v7_enabled or self.lambda_rgb_scribble != 0
+        compute_loss_chunk = self.learnable_tau_loss_enabled or self.adaptive_norm_balanced_enabled or self.adaptive_gradnorm_enabled or self.adaptive_gradbudget_align_enabled or self.adaptive_v2_enabled or self.adaptive_v3_enabled or self.adaptive_v4_enabled or self.adaptive_v6_enabled or self.adaptive_v7_enabled or self.lambda_chunk != 0
 
         if structure_image is not None and (compute_loss_st or compute_loss_rs):
             if has_structure is None:

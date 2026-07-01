@@ -356,6 +356,85 @@ def is_adaptive_v7_enabled(cfg):
     )
 
 
+def get_adaptive_norm_balanced_config(cfg):
+    struct_cfg = getattr(cfg, "STRUCTXLIP", None)
+    adaptive_cfg = getattr(struct_cfg, "ADAPTIVE_NORM_BALANCED", None)
+    min_weight = float(getattr(adaptive_cfg, "MIN_WEIGHT", 0.15))
+    if min_weight >= (1.0 / 3.0):
+        raise ValueError("STRUCTXLIP.ADAPTIVE_NORM_BALANCED.MIN_WEIGHT must be < 1/3")
+    return {
+        "enabled": bool(getattr(adaptive_cfg, "ENABLED", False)),
+        "beta": float(getattr(adaptive_cfg, "BETA", 0.9)),
+        "reward_ema": float(getattr(adaptive_cfg, "REWARD_EMA", 0.8)),
+        "temperature": float(getattr(adaptive_cfg, "TEMPERATURE", 0.5)),
+        "gamma_max": float(getattr(adaptive_cfg, "GAMMA_MAX", 0.05)),
+        "gamma_min": float(getattr(adaptive_cfg, "GAMMA_MIN", 0.005)),
+        "eps": float(getattr(adaptive_cfg, "EPS", 1e-8)),
+        "clamp_aux_loss_nonneg": bool(getattr(adaptive_cfg, "CLAMP_AUX_LOSS_NONNEG", True)),
+        "detach_weights": bool(getattr(adaptive_cfg, "DETACH_WEIGHTS", True)),
+        "min_weight": min_weight,
+    }
+
+
+def get_adaptive_gradnorm_config(cfg):
+    struct_cfg = getattr(cfg, "STRUCTXLIP", None)
+    adaptive_cfg = getattr(struct_cfg, "ADAPTIVE_GRADNORM", None)
+    return {
+        "enabled": bool(getattr(adaptive_cfg, "ENABLED", False)),
+        "alpha": float(getattr(adaptive_cfg, "ALPHA", 1.5)),
+        "gamma": float(getattr(adaptive_cfg, "GAMMA", 0.1)),
+        "beta": float(getattr(adaptive_cfg, "BETA", 0.5)),
+        "eps": float(getattr(adaptive_cfg, "EPS", 1e-8)),
+        "clamp_aux_loss_nonneg": bool(getattr(adaptive_cfg, "CLAMP_AUX_LOSS_NONNEG", True)),
+        "detach_lambdas": bool(getattr(adaptive_cfg, "DETACH_LAMBDAS", True)),
+        "min_weight": float(getattr(adaptive_cfg, "MIN_WEIGHT", 0.05)),
+        "max_weight": float(getattr(adaptive_cfg, "MAX_WEIGHT", 10.0)),
+    }
+
+
+def is_adaptive_gradnorm_enabled(cfg):
+    return (
+        getattr(getattr(cfg, "MODEL", None), "CLIP_MODEL", "") == "structxlip"
+        and get_adaptive_gradnorm_config(cfg)["enabled"]
+    )
+
+
+def is_adaptive_norm_balanced_enabled(cfg):
+    return (
+        getattr(getattr(cfg, "MODEL", None), "CLIP_MODEL", "") == "structxlip"
+        and get_adaptive_norm_balanced_config(cfg)["enabled"]
+    )
+
+
+def get_adaptive_gradbudget_align_config(cfg):
+    struct_cfg = getattr(cfg, "STRUCTXLIP", None)
+    adaptive_cfg = getattr(struct_cfg, "ADAPTIVE_GRADBUDGET_ALIGN", None)
+    min_weight = float(getattr(adaptive_cfg, "MIN_WEIGHT", 0.05))
+    if min_weight >= (1.0 / 3.0):
+        raise ValueError("STRUCTXLIP.ADAPTIVE_GRADBUDGET_ALIGN.MIN_WEIGHT must be < 1/3")
+    return {
+        "enabled": bool(getattr(adaptive_cfg, "ENABLED", False)),
+        "beta": float(getattr(adaptive_cfg, "BETA", 0.9)),
+        "reward_ema": float(getattr(adaptive_cfg, "REWARD_EMA", 0.8)),
+        "temperature": float(getattr(adaptive_cfg, "TEMPERATURE", 0.5)),
+        "gamma_max": float(getattr(adaptive_cfg, "GAMMA_MAX", 0.5)),
+        "gamma_min": float(getattr(adaptive_cfg, "GAMMA_MIN", 0.0)),
+        "eps": float(getattr(adaptive_cfg, "EPS", 1e-8)),
+        "clamp_aux_loss_nonneg": bool(getattr(adaptive_cfg, "CLAMP_AUX_LOSS_NONNEG", True)),
+        "detach_lambdas": bool(getattr(adaptive_cfg, "DETACH_LAMBDAS", True)),
+        "min_weight": min_weight,
+        "use_positive_alignment_gate": bool(getattr(adaptive_cfg, "USE_POSITIVE_ALIGNMENT_GATE", True)),
+        "lambda_max": float(getattr(adaptive_cfg, "LAMBDA_MAX", 10.0)),
+    }
+
+
+def is_adaptive_gradbudget_align_enabled(cfg):
+    return (
+        getattr(getattr(cfg, "MODEL", None), "CLIP_MODEL", "") == "structxlip"
+        and get_adaptive_gradbudget_align_config(cfg)["enabled"]
+    )
+
+
 def get_learnable_tau_loss_config(cfg):
     struct_cfg = getattr(cfg, "STRUCTXLIP", None)
     tau_cfg = getattr(struct_cfg, "LEARNABLE_TAU_LOSS", None)
@@ -406,6 +485,559 @@ def fixed_structxlip_lambdas(model):
         "lambda_rs": safe_float(getattr(model, "lambda_rgb_scribble", 0.0)),
         "lambda_chunk": safe_float(getattr(model, "lambda_chunk", 0.0)),
     }
+
+
+def make_gradbudget_align_state():
+    return {
+        "G0": 0.0,
+        "G": np.zeros(3, dtype=np.float64),
+        "r": np.zeros(3, dtype=np.float64),
+    }
+
+
+def make_adaptive_norm_balanced_state():
+    return {
+        "loss_ema": np.zeros(3, dtype=np.float64),
+        "r": np.zeros(3, dtype=np.float64),
+        "initialized": False,
+    }
+
+
+def make_adaptive_gradnorm_state():
+    return {
+        "initial_losses": np.zeros(3, dtype=np.float64),
+        "weights": np.ones(3, dtype=np.float64),
+        "initialized": False,
+    }
+
+
+def zero_gradbudget_align_result(device=None, dtype=None):
+    lambdas = {"lambda_st": 0.0, "lambda_rs": 0.0, "lambda_chunk": 0.0}
+    diagnostics = {
+        "grad_norm_main": 0.0,
+        "grad_norm_st": 0.0,
+        "grad_norm_rs": 0.0,
+        "grad_norm_chunk": 0.0,
+        "cos_main_st": 0.0,
+        "cos_main_rs": 0.0,
+        "cos_main_chunk": 0.0,
+        "s_st": 0.0,
+        "s_rs": 0.0,
+        "s_chunk": 0.0,
+        "p_st": 1.0 / 3.0,
+        "p_rs": 1.0 / 3.0,
+        "p_chunk": 1.0 / 3.0,
+        "w_st": 1.0 / 3.0,
+        "w_rs": 1.0 / 3.0,
+        "w_chunk": 1.0 / 3.0,
+        "ema_st": 0.0,
+        "ema_rs": 0.0,
+        "ema_chunk": 0.0,
+        "reward_st_obs": 0.0,
+        "reward_rs_obs": 0.0,
+        "reward_chunk_obs": 0.0,
+        "reward_st": 0.0,
+        "reward_rs": 0.0,
+        "reward_chunk": 0.0,
+        "aux_loss_mean": 0.0,
+        "gamma": 0.0,
+        "gamma_aux_over_seg": 0.0,
+    }
+    if device is None:
+        device = torch.device("cpu")
+    if dtype is None:
+        dtype = torch.float32
+    zero = torch.zeros((), device=device, dtype=dtype)
+    parts = {
+        "loss_st_pos": zero,
+        "loss_rs_pos": zero,
+        "loss_chunk_pos": zero,
+        "weighted_loss_st": zero,
+        "weighted_loss_rs": zero,
+        "weighted_loss_chunk_align": zero,
+        "weighted_struct_total": zero,
+    }
+    return lambdas, diagnostics, parts
+
+
+def _gradbudget_softmax(values, eps):
+    values = np.array(values, dtype=np.float64)
+    if values.shape != (3,) or not np.all(np.isfinite(values)):
+        return np.full(3, 1.0 / 3.0, dtype=np.float64)
+    shifted = values - float(np.max(values))
+    exp_values = np.exp(np.clip(shifted, -60.0, 60.0))
+    denom = float(exp_values.sum())
+    if not np.isfinite(denom) or denom <= eps:
+        return np.full(3, 1.0 / 3.0, dtype=np.float64)
+    return exp_values / denom
+
+
+def compute_adaptive_gradnorm(main_loss, raw_losses, parameters, adaptive_cfg, state):
+    params = list(parameters)
+    loss_st = raw_losses.get("loss_st")
+    loss_rs = raw_losses.get("loss_rs")
+    loss_chunk = raw_losses.get("loss_chunk_align")
+    ref = next((loss for loss in (loss_st, loss_rs, loss_chunk, main_loss) if torch.is_tensor(loss)), None)
+    device = ref.device if ref is not None else None
+    dtype = ref.dtype if ref is not None and ref.is_floating_point() else torch.float32
+    if not params or not all(torch.is_tensor(loss_value) for loss_value in (loss_st, loss_rs, loss_chunk)):
+        return zero_gradbudget_align_result(device, dtype)
+
+    eps = float(adaptive_cfg["eps"])
+    eps = eps if np.isfinite(eps) and eps > 0.0 else 1e-8
+    gamma = float(adaptive_cfg["gamma"])
+    gamma = gamma if np.isfinite(gamma) and gamma >= 0.0 else 0.1
+    alpha = float(adaptive_cfg["alpha"])
+    alpha = alpha if np.isfinite(alpha) and alpha >= 0.0 else 1.5
+    beta = float(adaptive_cfg["beta"])
+    beta = min(max(beta if np.isfinite(beta) else 0.5, 0.0), 1.0)
+    min_weight = max(float(adaptive_cfg["min_weight"]), 0.0)
+    max_weight = float(adaptive_cfg["max_weight"])
+    max_weight = max_weight if np.isfinite(max_weight) and max_weight > min_weight else 10.0
+
+    if bool(adaptive_cfg["clamp_aux_loss_nonneg"]):
+        loss_st_pos = torch.clamp(loss_st, min=0.0)
+        loss_rs_pos = torch.clamp(loss_rs, min=0.0)
+        loss_chunk_pos = torch.clamp(loss_chunk, min=0.0)
+    else:
+        loss_st_pos, loss_rs_pos, loss_chunk_pos = loss_st, loss_rs, loss_chunk
+
+    raw_values = np.array([
+        max(safe_float(loss_st_pos), 0.0),
+        max(safe_float(loss_rs_pos), 0.0),
+        max(safe_float(loss_chunk_pos), 0.0),
+    ], dtype=np.float64)
+    raw_values = np.maximum(np.where(np.isfinite(raw_values), raw_values, 0.0), eps)
+
+    if state is None:
+        state = make_adaptive_gradnorm_state()
+    if not bool(state.get("initialized", False)):
+        state["initial_losses"] = raw_values.copy()
+        state["weights"] = np.ones(3, dtype=np.float64)
+        state["initialized"] = True
+
+    weights = np.array(state.get("weights", np.ones(3)), dtype=np.float64)
+    weights = np.where(np.isfinite(weights), weights, 1.0)
+    weights = np.clip(weights, min_weight, max_weight)
+    weights = 3.0 * weights / max(float(weights.sum()), eps)
+
+    try:
+        grad_main = gradient_vector(main_loss, params)
+        grad_st = gradient_vector(loss_st_pos, params)
+        grad_rs = gradient_vector(loss_rs_pos, params)
+        grad_chunk = gradient_vector(loss_chunk_pos, params)
+    except RuntimeError:
+        return zero_gradbudget_align_result(device, dtype)
+
+    grads = (grad_main, grad_st, grad_rs, grad_chunk)
+    if any(vector is None or vector.numel() == 0 for vector in grads):
+        return zero_gradbudget_align_result(device, dtype)
+
+    norm_main = safe_norm(grad_main)
+    branch_norms = np.array([safe_norm(grad_st), safe_norm(grad_rs), safe_norm(grad_chunk)], dtype=np.float64)
+    branch_norms = np.maximum(np.where(np.isfinite(branch_norms), branch_norms, 0.0), eps)
+    weighted_grad_norms = weights * branch_norms
+
+    initial_losses = np.maximum(np.array(state.get("initial_losses", raw_values), dtype=np.float64), eps)
+    loss_ratios = raw_values / initial_losses
+    inverse_rates = loss_ratios / max(float(loss_ratios.mean()), eps)
+    target_grad_norms = float(weighted_grad_norms.mean()) * np.power(inverse_rates, alpha)
+    target_weights = target_grad_norms / branch_norms
+    target_weights = np.clip(np.where(np.isfinite(target_weights), target_weights, 1.0), min_weight, max_weight)
+    target_weights = 3.0 * target_weights / max(float(target_weights.sum()), eps)
+    weights = beta * weights + (1.0 - beta) * target_weights
+    weights = np.clip(np.where(np.isfinite(weights), weights, 1.0), min_weight, max_weight)
+    weights = 3.0 * weights / max(float(weights.sum()), eps)
+    state["weights"] = weights
+
+    lambdas_np = gamma * weights
+    lambda_tensors = [torch.as_tensor(safe_float(value), device=device, dtype=dtype) for value in lambdas_np]
+    if bool(adaptive_cfg["detach_lambdas"]):
+        lambda_tensors = [value.detach() for value in lambda_tensors]
+
+    weighted_loss_st = lambda_tensors[0] * loss_st_pos
+    weighted_loss_rs = lambda_tensors[1] * loss_rs_pos
+    weighted_loss_chunk = lambda_tensors[2] * loss_chunk_pos
+    weighted_struct_total = weighted_loss_st + weighted_loss_rs + weighted_loss_chunk
+
+    lambdas = {
+        "lambda_st": safe_float(lambdas_np[0]),
+        "lambda_rs": safe_float(lambdas_np[1]),
+        "lambda_chunk": safe_float(lambdas_np[2]),
+    }
+    diagnostics = {
+        "grad_norm_main": norm_main,
+        "grad_norm_st": lambdas["lambda_st"] * safe_float(branch_norms[0]),
+        "grad_norm_rs": lambdas["lambda_rs"] * safe_float(branch_norms[1]),
+        "grad_norm_chunk": lambdas["lambda_chunk"] * safe_float(branch_norms[2]),
+        "cos_main_st": safe_cosine(grad_main, grad_st, eps=eps),
+        "cos_main_rs": safe_cosine(grad_main, grad_rs, eps=eps),
+        "cos_main_chunk": safe_cosine(grad_main, grad_chunk, eps=eps),
+        "w_st": safe_float(weights[0]),
+        "w_rs": safe_float(weights[1]),
+        "w_chunk": safe_float(weights[2]),
+        "a_st": safe_float(loss_ratios[0]),
+        "a_rs": safe_float(loss_ratios[1]),
+        "a_chunk": safe_float(loss_ratios[2]),
+        "ema_st": safe_float(initial_losses[0]),
+        "ema_rs": safe_float(initial_losses[1]),
+        "ema_chunk": safe_float(initial_losses[2]),
+        "gamma": safe_float(gamma),
+        "lambda_st": lambdas["lambda_st"],
+        "lambda_rs": lambdas["lambda_rs"],
+        "lambda_chunk": lambdas["lambda_chunk"],
+        "gamma_aux_over_seg": safe_div(weighted_struct_total, main_loss),
+    }
+    if not all(np.isfinite(value) for value in list(lambdas.values()) + list(diagnostics.values())):
+        return zero_gradbudget_align_result(device, dtype)
+
+    parts = {
+        "loss_st_pos": loss_st_pos,
+        "loss_rs_pos": loss_rs_pos,
+        "loss_chunk_pos": loss_chunk_pos,
+        "weighted_loss_st": weighted_loss_st,
+        "weighted_loss_rs": weighted_loss_rs,
+        "weighted_loss_chunk_align": weighted_loss_chunk,
+        "weighted_struct_total": weighted_struct_total,
+    }
+    return lambdas, diagnostics, parts
+
+
+def compute_adaptive_gradbudget_align(main_loss, raw_losses, parameters, adaptive_cfg, state):
+    params = list(parameters)
+    loss_st = raw_losses.get("loss_st")
+    loss_rs = raw_losses.get("loss_rs")
+    loss_chunk = raw_losses.get("loss_chunk_align")
+    ref = next((loss for loss in (loss_st, loss_rs, loss_chunk, main_loss) if torch.is_tensor(loss)), None)
+    device = ref.device if ref is not None else None
+    dtype = ref.dtype if ref is not None and ref.is_floating_point() else torch.float32
+    if not params or not all(torch.is_tensor(loss_value) for loss_value in (loss_st, loss_rs, loss_chunk)):
+        return zero_gradbudget_align_result(device, dtype)
+
+    eps = float(adaptive_cfg["eps"])
+    eps = eps if np.isfinite(eps) and eps > 0.0 else 1e-8
+    min_weight = float(adaptive_cfg["min_weight"])
+    if min_weight >= (1.0 / 3.0):
+        raise ValueError("STRUCTXLIP.ADAPTIVE_GRADBUDGET_ALIGN.MIN_WEIGHT must be < 1/3")
+    min_weight = max(min_weight, 0.0)
+
+    if bool(adaptive_cfg["clamp_aux_loss_nonneg"]):
+        loss_st_pos = torch.clamp(loss_st, min=0.0)
+        loss_rs_pos = torch.clamp(loss_rs, min=0.0)
+        loss_chunk_pos = torch.clamp(loss_chunk, min=0.0)
+    else:
+        loss_st_pos, loss_rs_pos, loss_chunk_pos = loss_st, loss_rs, loss_chunk
+
+    try:
+        grad_main = gradient_vector(main_loss, params)
+        grad_st = gradient_vector(loss_st_pos, params)
+        grad_rs = gradient_vector(loss_rs_pos, params)
+        grad_chunk = gradient_vector(loss_chunk_pos, params)
+    except RuntimeError:
+        return zero_gradbudget_align_result(device, dtype)
+
+    grads = (grad_main, grad_st, grad_rs, grad_chunk)
+    if any(vector is None or vector.numel() == 0 for vector in grads):
+        return zero_gradbudget_align_result(device, dtype)
+
+    norm_main = safe_norm(grad_main)
+    branch_norms = np.array([safe_norm(grad_st), safe_norm(grad_rs), safe_norm(grad_chunk)], dtype=np.float64)
+    reward_obs = np.array([
+        safe_cosine(grad_main, grad_st, eps=eps),
+        safe_cosine(grad_main, grad_rs, eps=eps),
+        safe_cosine(grad_main, grad_chunk, eps=eps),
+    ], dtype=np.float64)
+    reward_obs = np.where(np.isfinite(reward_obs), reward_obs, 0.0)
+
+    beta = float(adaptive_cfg["beta"])
+    if not np.isfinite(beta):
+        beta = 0.9
+    beta = min(max(beta, 0.0), 1.0)
+    reward_ema = float(adaptive_cfg["reward_ema"])
+    if not np.isfinite(reward_ema):
+        reward_ema = 0.8
+    reward_ema = min(max(reward_ema, 0.0), 1.0)
+
+    if state is None:
+        state = make_gradbudget_align_state()
+    state["G0"] = beta * float(state.get("G0", 0.0)) + (1.0 - beta) * norm_main
+    state["G"] = beta * np.array(state.get("G", np.zeros(3)), dtype=np.float64) + (1.0 - beta) * branch_norms
+    state["r"] = reward_ema * np.array(state.get("r", np.zeros(3)), dtype=np.float64) + (1.0 - reward_ema) * reward_obs
+    G0 = safe_float(state["G0"])
+    G = np.where(np.isfinite(state["G"]), state["G"], 0.0)
+    rewards = np.where(np.isfinite(state["r"]), state["r"], 0.0)
+
+    temp = float(adaptive_cfg["temperature"])
+    if not np.isfinite(temp) or temp <= 0.0:
+        temp = 0.5
+    p = _gradbudget_softmax(rewards / temp, eps)
+    w = min_weight + (1.0 - 3.0 * min_weight) * p
+    w_sum = float(w.sum())
+    if not np.isfinite(w_sum) or w_sum <= eps:
+        w = np.full(3, 1.0 / 3.0, dtype=np.float64)
+    else:
+        w = w / w_sum
+
+    valid = np.isfinite(G0) and G0 > eps and np.all(np.isfinite(G)) and np.all(G > eps)
+    if not valid:
+        gamma = 0.0
+        lambdas_np = np.zeros(3, dtype=np.float64)
+    else:
+        positive_rewards = np.maximum(rewards, 0.0)
+        alignment_strength = float(np.sum(w * positive_rewards))
+        gamma_min = float(adaptive_cfg["gamma_min"])
+        gamma_max = float(adaptive_cfg["gamma_max"])
+        if not np.isfinite(gamma_min):
+            gamma_min = 0.0
+        if not np.isfinite(gamma_max):
+            gamma_max = 0.5
+        if gamma_max < gamma_min:
+            gamma_min, gamma_max = gamma_max, gamma_min
+        gamma = float(np.clip(alignment_strength, gamma_min, gamma_max))
+        if not np.isfinite(gamma):
+            gamma = 0.0
+        if bool(adaptive_cfg["use_positive_alignment_gate"]):
+            gate = positive_rewards
+        else:
+            gate = np.ones(3, dtype=np.float64)
+        lambdas_np = gamma * w * gate * G0 / (G + eps * G0)
+        lambda_max = float(adaptive_cfg["lambda_max"])
+        if not np.isfinite(lambda_max) or lambda_max <= 0.0:
+            lambda_max = 10.0
+        lambdas_np = np.clip(lambdas_np, 0.0, lambda_max)
+        lambdas_np = np.where(np.isfinite(lambdas_np), lambdas_np, 0.0)
+
+    lambda_tensors = [
+        torch.as_tensor(safe_float(value), device=device, dtype=dtype)
+        for value in lambdas_np
+    ]
+    if bool(adaptive_cfg["detach_lambdas"]):
+        lambda_tensors = [value.detach() for value in lambda_tensors]
+
+    weighted_loss_st = lambda_tensors[0] * loss_st_pos
+    weighted_loss_rs = lambda_tensors[1] * loss_rs_pos
+    weighted_loss_chunk = lambda_tensors[2] * loss_chunk_pos
+    weighted_struct_total = weighted_loss_st + weighted_loss_rs + weighted_loss_chunk
+    weighted_total_value = safe_float(weighted_struct_total)
+    if weighted_total_value < -eps:
+        raise FloatingPointError(f"Negative weighted_struct_total from ADAPTIVE_GRADBUDGET_ALIGN: {weighted_total_value}")
+
+    lambdas = {
+        "lambda_st": safe_float(lambdas_np[0]),
+        "lambda_rs": safe_float(lambdas_np[1]),
+        "lambda_chunk": safe_float(lambdas_np[2]),
+    }
+    diagnostics = {
+        "grad_norm_main": norm_main,
+        "grad_norm_st": lambdas["lambda_st"] * safe_float(branch_norms[0]),
+        "grad_norm_rs": lambdas["lambda_rs"] * safe_float(branch_norms[1]),
+        "grad_norm_chunk": lambdas["lambda_chunk"] * safe_float(branch_norms[2]),
+        "cos_main_st": safe_float(reward_obs[0]),
+        "cos_main_rs": safe_float(reward_obs[1]),
+        "cos_main_chunk": safe_float(reward_obs[2]),
+        "s_st": safe_float(reward_obs[0]),
+        "s_rs": safe_float(reward_obs[1]),
+        "s_chunk": safe_float(reward_obs[2]),
+        "p_st": safe_float(p[0]),
+        "p_rs": safe_float(p[1]),
+        "p_chunk": safe_float(p[2]),
+        "w_st": safe_float(w[0]),
+        "w_rs": safe_float(w[1]),
+        "w_chunk": safe_float(w[2]),
+        "ema_st": safe_float(G[0]),
+        "ema_rs": safe_float(G[1]),
+        "ema_chunk": safe_float(G[2]),
+        "reward_st_obs": safe_float(reward_obs[0]),
+        "reward_rs_obs": safe_float(reward_obs[1]),
+        "reward_chunk_obs": safe_float(reward_obs[2]),
+        "reward_st": safe_float(rewards[0]),
+        "reward_rs": safe_float(rewards[1]),
+        "reward_chunk": safe_float(rewards[2]),
+        "aux_loss_mean": safe_float((loss_st_pos + loss_rs_pos + loss_chunk_pos) / 3.0),
+        "gamma": safe_float(gamma),
+        "lambda_st": lambdas["lambda_st"],
+        "lambda_rs": lambdas["lambda_rs"],
+        "lambda_chunk": lambdas["lambda_chunk"],
+    }
+    if not all(np.isfinite(value) for value in list(lambdas.values()) + list(diagnostics.values())):
+        return zero_gradbudget_align_result(device, dtype)
+
+    parts = {
+        "loss_st_pos": loss_st_pos,
+        "loss_rs_pos": loss_rs_pos,
+        "loss_chunk_pos": loss_chunk_pos,
+        "weighted_loss_st": weighted_loss_st,
+        "weighted_loss_rs": weighted_loss_rs,
+        "weighted_loss_chunk_align": weighted_loss_chunk,
+        "weighted_struct_total": weighted_struct_total,
+    }
+    return lambdas, diagnostics, parts
+
+
+def compute_adaptive_norm_balanced(main_loss, raw_losses, parameters, adaptive_cfg, state):
+    params = list(parameters)
+    loss_st = raw_losses.get("loss_st")
+    loss_rs = raw_losses.get("loss_rs")
+    loss_chunk = raw_losses.get("loss_chunk_align")
+    ref = next((loss for loss in (loss_st, loss_rs, loss_chunk, main_loss) if torch.is_tensor(loss)), None)
+    device = ref.device if ref is not None else None
+    dtype = ref.dtype if ref is not None and ref.is_floating_point() else torch.float32
+    if not params or not all(torch.is_tensor(loss_value) for loss_value in (loss_st, loss_rs, loss_chunk)):
+        return zero_gradbudget_align_result(device, dtype)
+
+    eps = float(adaptive_cfg["eps"])
+    eps = eps if np.isfinite(eps) and eps > 0.0 else 1e-8
+    min_weight = max(float(adaptive_cfg["min_weight"]), 0.0)
+    if min_weight >= (1.0 / 3.0):
+        raise ValueError("STRUCTXLIP.ADAPTIVE_NORM_BALANCED.MIN_WEIGHT must be < 1/3")
+
+    if bool(adaptive_cfg["clamp_aux_loss_nonneg"]):
+        loss_st_pos = torch.clamp(loss_st, min=0.0)
+        loss_rs_pos = torch.clamp(loss_rs, min=0.0)
+        loss_chunk_pos = torch.clamp(loss_chunk, min=0.0)
+    else:
+        loss_st_pos, loss_rs_pos, loss_chunk_pos = loss_st, loss_rs, loss_chunk
+
+    raw_values = np.array([
+        safe_float(loss_st_pos),
+        safe_float(loss_rs_pos),
+        safe_float(loss_chunk_pos),
+    ], dtype=np.float64)
+    raw_values = np.where(np.isfinite(raw_values), raw_values, 0.0)
+    raw_values = np.maximum(raw_values, 0.0)
+
+    if state is None:
+        state = make_adaptive_norm_balanced_state()
+    beta = float(adaptive_cfg["beta"])
+    if not np.isfinite(beta):
+        beta = 0.9
+    beta = min(max(beta, 0.0), 1.0)
+    if not bool(state.get("initialized", False)):
+        state["loss_ema"] = np.maximum(raw_values, eps)
+        state["initialized"] = True
+    else:
+        state["loss_ema"] = beta * np.array(state.get("loss_ema", np.zeros(3)), dtype=np.float64) + (1.0 - beta) * raw_values
+        state["loss_ema"] = np.maximum(np.where(np.isfinite(state["loss_ema"]), state["loss_ema"], 0.0), eps)
+    scales = np.maximum(np.array(state["loss_ema"], dtype=np.float64), eps)
+
+    norm_loss_st = loss_st_pos / float(scales[0])
+    norm_loss_rs = loss_rs_pos / float(scales[1])
+    norm_loss_chunk = loss_chunk_pos / float(scales[2])
+
+    try:
+        grad_main = gradient_vector(main_loss, params)
+        grad_st = gradient_vector(norm_loss_st, params)
+        grad_rs = gradient_vector(norm_loss_rs, params)
+        grad_chunk = gradient_vector(norm_loss_chunk, params)
+    except RuntimeError:
+        return zero_gradbudget_align_result(device, dtype)
+
+    grads = (grad_main, grad_st, grad_rs, grad_chunk)
+    if any(vector is None or vector.numel() == 0 for vector in grads):
+        return zero_gradbudget_align_result(device, dtype)
+
+    reward_obs = np.array([
+        safe_cosine(grad_main, grad_st, eps=eps),
+        safe_cosine(grad_main, grad_rs, eps=eps),
+        safe_cosine(grad_main, grad_chunk, eps=eps),
+    ], dtype=np.float64)
+    reward_obs = np.where(np.isfinite(reward_obs), reward_obs, 0.0)
+
+    reward_ema = float(adaptive_cfg["reward_ema"])
+    if not np.isfinite(reward_ema):
+        reward_ema = 0.8
+    reward_ema = min(max(reward_ema, 0.0), 1.0)
+    state["r"] = reward_ema * np.array(state.get("r", np.zeros(3)), dtype=np.float64) + (1.0 - reward_ema) * reward_obs
+    rewards = np.where(np.isfinite(state["r"]), state["r"], 0.0)
+
+    temp = float(adaptive_cfg["temperature"])
+    if not np.isfinite(temp) or temp <= 0.0:
+        temp = 0.5
+    p = _gradbudget_softmax(rewards / temp, eps)
+    w = min_weight + (1.0 - 3.0 * min_weight) * p
+    w_sum = float(w.sum())
+    if not np.isfinite(w_sum) or w_sum <= eps:
+        w = np.full(3, 1.0 / 3.0, dtype=np.float64)
+    else:
+        w = w / w_sum
+
+    gamma_min = float(adaptive_cfg["gamma_min"])
+    gamma_max = float(adaptive_cfg["gamma_max"])
+    if not np.isfinite(gamma_min):
+        gamma_min = 0.0
+    if not np.isfinite(gamma_max):
+        gamma_max = 0.05
+    if gamma_max < gamma_min:
+        gamma_min, gamma_max = gamma_max, gamma_min
+    alignment_strength = float(np.mean(np.maximum(rewards, 0.0)))
+    gamma = float(np.clip(alignment_strength, gamma_min, gamma_max))
+    if not np.isfinite(gamma):
+        gamma = 0.0
+
+    lambdas_np = gamma * w
+    lambda_tensors = [torch.as_tensor(safe_float(value), device=device, dtype=dtype) for value in lambdas_np]
+    if bool(adaptive_cfg["detach_weights"]):
+        lambda_tensors = [value.detach() for value in lambda_tensors]
+
+    weighted_loss_st = lambda_tensors[0] * norm_loss_st
+    weighted_loss_rs = lambda_tensors[1] * norm_loss_rs
+    weighted_loss_chunk = lambda_tensors[2] * norm_loss_chunk
+    weighted_struct_total = weighted_loss_st + weighted_loss_rs + weighted_loss_chunk
+    weighted_total_value = safe_float(weighted_struct_total)
+    if weighted_total_value < -eps:
+        raise FloatingPointError(f"Negative weighted_struct_total from ADAPTIVE_NORM_BALANCED: {weighted_total_value}")
+
+    lambdas = {
+        "lambda_st": safe_float(lambdas_np[0]),
+        "lambda_rs": safe_float(lambdas_np[1]),
+        "lambda_chunk": safe_float(lambdas_np[2]),
+    }
+    diagnostics = {
+        "grad_norm_main": safe_norm(grad_main),
+        "grad_norm_st": lambdas["lambda_st"] * safe_norm(grad_st),
+        "grad_norm_rs": lambdas["lambda_rs"] * safe_norm(grad_rs),
+        "grad_norm_chunk": lambdas["lambda_chunk"] * safe_norm(grad_chunk),
+        "cos_main_st": safe_float(reward_obs[0]),
+        "cos_main_rs": safe_float(reward_obs[1]),
+        "cos_main_chunk": safe_float(reward_obs[2]),
+        "s_st": safe_float(reward_obs[0]),
+        "s_rs": safe_float(reward_obs[1]),
+        "s_chunk": safe_float(reward_obs[2]),
+        "p_st": safe_float(p[0]),
+        "p_rs": safe_float(p[1]),
+        "p_chunk": safe_float(p[2]),
+        "w_st": safe_float(w[0]),
+        "w_rs": safe_float(w[1]),
+        "w_chunk": safe_float(w[2]),
+        "ema_st": safe_float(scales[0]),
+        "ema_rs": safe_float(scales[1]),
+        "ema_chunk": safe_float(scales[2]),
+        "reward_st_obs": safe_float(reward_obs[0]),
+        "reward_rs_obs": safe_float(reward_obs[1]),
+        "reward_chunk_obs": safe_float(reward_obs[2]),
+        "reward_st": safe_float(rewards[0]),
+        "reward_rs": safe_float(rewards[1]),
+        "reward_chunk": safe_float(rewards[2]),
+        "norm_loss_st": safe_float(norm_loss_st),
+        "norm_loss_rs": safe_float(norm_loss_rs),
+        "norm_loss_chunk": safe_float(norm_loss_chunk),
+        "aux_loss_mean": safe_float((norm_loss_st + norm_loss_rs + norm_loss_chunk) / 3.0),
+        "gamma": safe_float(gamma),
+        "gamma_aux_over_seg": safe_div(weighted_struct_total, main_loss),
+    }
+    if not all(np.isfinite(value) for value in list(lambdas.values()) + list(diagnostics.values())):
+        return zero_gradbudget_align_result(device, dtype)
+
+    parts = {
+        "loss_st_pos": loss_st_pos,
+        "loss_rs_pos": loss_rs_pos,
+        "loss_chunk_pos": loss_chunk_pos,
+        "weighted_loss_st": weighted_loss_st,
+        "weighted_loss_rs": weighted_loss_rs,
+        "weighted_loss_chunk_align": weighted_loss_chunk,
+        "weighted_struct_total": weighted_struct_total,
+    }
+    return lambdas, diagnostics, parts
 
 
 def zero_adaptive_v2_result():
@@ -940,6 +1572,9 @@ def build_datasets_from_json(cfg):
     adaptive_v4_enabled = is_adaptive_v4_enabled(cfg)
     adaptive_v6_enabled = is_adaptive_v6_enabled(cfg)
     adaptive_v7_enabled = is_adaptive_v7_enabled(cfg)
+    adaptive_norm_balanced_enabled = is_adaptive_norm_balanced_enabled(cfg)
+    adaptive_gradbudget_align_enabled = is_adaptive_gradbudget_align_enabled(cfg)
+    adaptive_gradnorm_enabled = is_adaptive_gradnorm_enabled(cfg)
     learnable_tau_loss_enabled = is_learnable_tau_loss_enabled(cfg)
     common_kwargs = {
         "data_root": getattr(cfg.DATASET, "DATA_ROOT", ""),
@@ -958,6 +1593,9 @@ def build_datasets_from_json(cfg):
                 or adaptive_v4_enabled
                 or adaptive_v6_enabled
                 or adaptive_v7_enabled
+                or adaptive_norm_balanced_enabled
+                or adaptive_gradbudget_align_enabled
+                or adaptive_gradnorm_enabled
                 or learnable_tau_loss_enabled
                 or any(
                     float(getattr(struct_cfg, key, 0.0)) != 0.0
@@ -1050,6 +1688,12 @@ def main():
         if is_learnable_tau_loss_enabled(cfg):
             tau_weight = get_learnable_tau_loss_config(cfg)["overall_weight"]
             cfg.DATASET.NAME = cfg.DATASET.NAME + f"_learnable_tau_w{tau_weight:g}"
+        elif is_adaptive_norm_balanced_enabled(cfg):
+            cfg.DATASET.NAME = cfg.DATASET.NAME + "_norm_balanced"
+        elif is_adaptive_gradnorm_enabled(cfg):
+            cfg.DATASET.NAME = cfg.DATASET.NAME + "_gradnorm"
+        elif is_adaptive_gradbudget_align_enabled(cfg):
+            cfg.DATASET.NAME = cfg.DATASET.NAME + "_gradbudget_align"
     run_output_dir = os.path.join(cfg.output_dir, cfg.DATASET.NAME, "trained_models", f"seed{cfg.seed}")
     os.makedirs(run_output_dir, exist_ok=True)
     structxlip_diagnostics_path = os.path.join(run_output_dir, "structxlip_train_diagnostics.csv")
@@ -1138,21 +1782,48 @@ def main():
     adaptive_v4_cfg = get_adaptive_v4_config(cfg)
     adaptive_v6_cfg = get_adaptive_v6_config(cfg)
     adaptive_v7_cfg = get_adaptive_v7_config(cfg)
+    adaptive_norm_balanced_cfg = get_adaptive_norm_balanced_config(cfg)
+    adaptive_gradnorm_cfg = get_adaptive_gradnorm_config(cfg)
+    adaptive_gradbudget_align_cfg = get_adaptive_gradbudget_align_config(cfg)
+    adaptive_norm_balanced_enabled = (
+        cfg.MODEL.CLIP_MODEL == "structxlip"
+        and adaptive_norm_balanced_cfg["enabled"]
+        and not learnable_tau_loss_enabled
+    )
+    adaptive_gradnorm_enabled = (
+        cfg.MODEL.CLIP_MODEL == "structxlip"
+        and adaptive_gradnorm_cfg["enabled"]
+        and not learnable_tau_loss_enabled
+        and not adaptive_norm_balanced_enabled
+    )
+    adaptive_gradbudget_align_enabled = (
+        cfg.MODEL.CLIP_MODEL == "structxlip"
+        and adaptive_gradbudget_align_cfg["enabled"]
+        and not learnable_tau_loss_enabled
+        and not adaptive_norm_balanced_enabled
+        and not adaptive_gradnorm_enabled
+    )
     adaptive_v7_enabled = (
         cfg.MODEL.CLIP_MODEL == "structxlip"
         and adaptive_v7_cfg["enabled"]
         and not learnable_tau_loss_enabled
+        and not adaptive_norm_balanced_enabled
+        and not adaptive_gradbudget_align_enabled
     )
     adaptive_v6_enabled = (
         cfg.MODEL.CLIP_MODEL == "structxlip"
         and adaptive_v6_cfg["enabled"]
         and not learnable_tau_loss_enabled
+        and not adaptive_norm_balanced_enabled
+        and not adaptive_gradbudget_align_enabled
         and not adaptive_v7_enabled
     )
     adaptive_v4_enabled = (
         cfg.MODEL.CLIP_MODEL == "structxlip"
         and adaptive_v4_cfg["enabled"]
         and not learnable_tau_loss_enabled
+        and not adaptive_norm_balanced_enabled
+        and not adaptive_gradbudget_align_enabled
         and not adaptive_v6_enabled
         and not adaptive_v7_enabled
     )
@@ -1160,6 +1831,8 @@ def main():
         cfg.MODEL.CLIP_MODEL == "structxlip"
         and adaptive_v3_cfg["enabled"]
         and not learnable_tau_loss_enabled
+        and not adaptive_norm_balanced_enabled
+        and not adaptive_gradbudget_align_enabled
         and not adaptive_v4_enabled
         and not adaptive_v6_enabled
         and not adaptive_v7_enabled
@@ -1168,6 +1841,8 @@ def main():
         cfg.MODEL.CLIP_MODEL == "structxlip"
         and adaptive_v2_cfg["enabled"]
         and not learnable_tau_loss_enabled
+        and not adaptive_norm_balanced_enabled
+        and not adaptive_gradbudget_align_enabled
         and not adaptive_v3_enabled
         and not adaptive_v4_enabled
         and not adaptive_v6_enabled
@@ -1184,6 +1859,36 @@ def main():
             f"lr_mult: {learnable_tau_cfg['lr_mult']}, "
             f"overall_weight: {learnable_tau_cfg['overall_weight']}, "
             f"tau_reg_weight: {learnable_tau_cfg['tau_regularizer_weight']}"
+        )
+        logger.info(
+            "StructXLIP adaptive norm balanced enabled: "
+            f"{adaptive_norm_balanced_enabled}, "
+            f"beta: {adaptive_norm_balanced_cfg['beta']}, "
+            f"reward_ema: {adaptive_norm_balanced_cfg['reward_ema']}, "
+            f"temperature: {adaptive_norm_balanced_cfg['temperature']}, "
+            f"gamma_min/max: {adaptive_norm_balanced_cfg['gamma_min']}/{adaptive_norm_balanced_cfg['gamma_max']}, "
+            f"min_weight: {adaptive_norm_balanced_cfg['min_weight']}, "
+            f"eps: {adaptive_norm_balanced_cfg['eps']}"
+        )
+        logger.info(
+            "StructXLIP adaptive GradNorm enabled: "
+            f"{adaptive_gradnorm_enabled}, "
+            f"alpha: {adaptive_gradnorm_cfg['alpha']}, "
+            f"gamma: {adaptive_gradnorm_cfg['gamma']}, "
+            f"beta: {adaptive_gradnorm_cfg['beta']}, "
+            f"min/max weight: {adaptive_gradnorm_cfg['min_weight']}/{adaptive_gradnorm_cfg['max_weight']}, "
+            f"eps: {adaptive_gradnorm_cfg['eps']}"
+        )
+        logger.info(
+            "StructXLIP adaptive gradbudget align enabled: "
+            f"{adaptive_gradbudget_align_enabled}, "
+            f"beta: {adaptive_gradbudget_align_cfg['beta']}, "
+            f"reward_ema: {adaptive_gradbudget_align_cfg['reward_ema']}, "
+            f"temperature: {adaptive_gradbudget_align_cfg['temperature']}, "
+            f"gamma_min/max: {adaptive_gradbudget_align_cfg['gamma_min']}/{adaptive_gradbudget_align_cfg['gamma_max']}, "
+            f"min_weight: {adaptive_gradbudget_align_cfg['min_weight']}, "
+            f"lambda_max: {adaptive_gradbudget_align_cfg['lambda_max']}, "
+            f"eps: {adaptive_gradbudget_align_cfg['eps']}"
         )
         logger.info(
             "StructXLIP adaptive v2 enabled: "
@@ -1253,9 +1958,6 @@ def main():
     best_loss = float("inf")
     best_dice = -1.0
 
-    # debug
-    cfg.resume = False
-    # end debug
     if cfg.resume and os.path.exists(resume_path):
         checkpoint = torch.load(resume_path, map_location=cfg.MODEL.DEVICE, weights_only=False)
         model.load_state_dict(checkpoint["model"])
@@ -1288,6 +1990,9 @@ def main():
     v7_logits = np.zeros(3, dtype=np.float64)
     v7_rewards = np.zeros(3, dtype=np.float64)
     v7_reward_tilde = np.zeros(3, dtype=np.float64)
+    adaptive_norm_balanced_state = make_adaptive_norm_balanced_state()
+    adaptive_gradnorm_state = make_adaptive_gradnorm_state()
+    gradbudget_align_state = make_gradbudget_align_state()
     if cfg.MODEL.CLIP_MODEL == "structxlip" and start_epoch == 0:
         with open(structxlip_diagnostics_path, "w", newline="") as csv_file:
             csv.DictWriter(csv_file, fieldnames=STRUCTXLIP_DIAGNOSTIC_COLUMNS).writeheader()
@@ -1314,7 +2019,7 @@ def main():
             model_kwargs = {
                 "image": batch["image"].to(cfg.MODEL.DEVICE),
                 "text": batch["text_prompt"],
-                "return_clip_loss": learnable_tau_loss_enabled or (use_clip_loss and clip_loss_weight != 0) or adaptive_v2_enabled or adaptive_v3_enabled or adaptive_v4_enabled or adaptive_v6_enabled or adaptive_v7_enabled,
+                "return_clip_loss": learnable_tau_loss_enabled or (use_clip_loss and clip_loss_weight != 0) or adaptive_norm_balanced_enabled or adaptive_gradnorm_enabled or adaptive_gradbudget_align_enabled or adaptive_v2_enabled or adaptive_v3_enabled or adaptive_v4_enabled or adaptive_v6_enabled or adaptive_v7_enabled,
             }
             if cfg.MODEL.CLIP_MODEL == "structxlip":
                 structure_image = batch["original_structure_image"] if "original_structure_image" in batch else batch["structure_image"]
@@ -1357,6 +2062,7 @@ def main():
             active_v6_norm_losses = None
             active_v6_aux_loss = None
             active_learnable_tau_parts = None
+            active_gradbudget_loss_parts = None
             if structxlip_loss is not None:
                 if learnable_tau_loss_enabled and learnable_tau_loss is not None:
                     raw_struct_losses = getattr(model, "last_structxlip_loss_tensors", {})
@@ -1395,13 +2101,76 @@ def main():
                         }
                     else:
                         structxlip_loss = seg_loss.new_zeros(())
-                elif adaptive_v7_enabled or adaptive_v6_enabled or adaptive_v4_enabled or adaptive_v3_enabled or adaptive_v2_enabled:
+                elif adaptive_norm_balanced_enabled or adaptive_gradnorm_enabled or adaptive_gradbudget_align_enabled or adaptive_v7_enabled or adaptive_v6_enabled or adaptive_v4_enabled or adaptive_v3_enabled or adaptive_v2_enabled:
                     raw_struct_losses = getattr(model, "last_structxlip_loss_tensors", {})
                     zero = seg_loss.new_zeros(())
                     loss_st_raw = raw_struct_losses.get("loss_st", zero)
                     loss_rs_raw = raw_struct_losses.get("loss_rs", zero)
                     loss_chunk_raw = raw_struct_losses.get("loss_chunk_align", zero)
-                    if adaptive_v7_enabled:
+                    if adaptive_norm_balanced_enabled:
+                        active_struct_lambdas, active_gradient_diagnostics, active_gradbudget_loss_parts = compute_adaptive_norm_balanced(
+                            main_loss,
+                            raw_struct_losses,
+                            diagnostic_parameters,
+                            adaptive_norm_balanced_cfg,
+                            adaptive_norm_balanced_state,
+                        )
+                        structxlip_loss = active_gradbudget_loss_parts["weighted_struct_total"]
+                        active_gradient_diagnostics.update({
+                            "weighted_loss_st": safe_float(active_gradbudget_loss_parts["weighted_loss_st"]),
+                            "weighted_loss_rs": safe_float(active_gradbudget_loss_parts["weighted_loss_rs"]),
+                            "weighted_loss_chunk_align": safe_float(active_gradbudget_loss_parts["weighted_loss_chunk_align"]),
+                            "weighted_struct_total": safe_float(active_gradbudget_loss_parts["weighted_struct_total"]),
+                            "struct_objective_total": safe_float(active_gradbudget_loss_parts["weighted_struct_total"]),
+                            "struct_over_seg": safe_div(active_gradbudget_loss_parts["weighted_struct_total"], seg_loss),
+                            "weighted_st_over_seg": safe_div(active_gradbudget_loss_parts["weighted_loss_st"], seg_loss),
+                            "weighted_rs_over_seg": safe_div(active_gradbudget_loss_parts["weighted_loss_rs"], seg_loss),
+                            "weighted_chunk_over_seg": safe_div(active_gradbudget_loss_parts["weighted_loss_chunk_align"], seg_loss),
+                            "gamma_aux_over_seg": safe_div(active_gradbudget_loss_parts["weighted_struct_total"], seg_loss),
+                        })
+                    elif adaptive_gradnorm_enabled:
+                        active_struct_lambdas, active_gradient_diagnostics, active_gradbudget_loss_parts = compute_adaptive_gradnorm(
+                            main_loss,
+                            raw_struct_losses,
+                            diagnostic_parameters,
+                            adaptive_gradnorm_cfg,
+                            adaptive_gradnorm_state,
+                        )
+                        structxlip_loss = active_gradbudget_loss_parts["weighted_struct_total"]
+                        active_gradient_diagnostics.update({
+                            "weighted_loss_st": safe_float(active_gradbudget_loss_parts["weighted_loss_st"]),
+                            "weighted_loss_rs": safe_float(active_gradbudget_loss_parts["weighted_loss_rs"]),
+                            "weighted_loss_chunk_align": safe_float(active_gradbudget_loss_parts["weighted_loss_chunk_align"]),
+                            "weighted_struct_total": safe_float(active_gradbudget_loss_parts["weighted_struct_total"]),
+                            "struct_objective_total": safe_float(active_gradbudget_loss_parts["weighted_struct_total"]),
+                            "struct_over_seg": safe_div(active_gradbudget_loss_parts["weighted_struct_total"], seg_loss),
+                            "weighted_st_over_seg": safe_div(active_gradbudget_loss_parts["weighted_loss_st"], seg_loss),
+                            "weighted_rs_over_seg": safe_div(active_gradbudget_loss_parts["weighted_loss_rs"], seg_loss),
+                            "weighted_chunk_over_seg": safe_div(active_gradbudget_loss_parts["weighted_loss_chunk_align"], seg_loss),
+                            "gamma_aux_over_seg": safe_div(active_gradbudget_loss_parts["weighted_struct_total"], seg_loss),
+                        })
+                    elif adaptive_gradbudget_align_enabled:
+                        active_struct_lambdas, active_gradient_diagnostics, active_gradbudget_loss_parts = compute_adaptive_gradbudget_align(
+                            main_loss,
+                            raw_struct_losses,
+                            diagnostic_parameters,
+                            adaptive_gradbudget_align_cfg,
+                            gradbudget_align_state,
+                        )
+                        structxlip_loss = active_gradbudget_loss_parts["weighted_struct_total"]
+                        active_gradient_diagnostics.update({
+                            "weighted_loss_st": safe_float(active_gradbudget_loss_parts["weighted_loss_st"]),
+                            "weighted_loss_rs": safe_float(active_gradbudget_loss_parts["weighted_loss_rs"]),
+                            "weighted_loss_chunk_align": safe_float(active_gradbudget_loss_parts["weighted_loss_chunk_align"]),
+                            "weighted_struct_total": safe_float(active_gradbudget_loss_parts["weighted_struct_total"]),
+                            "struct_objective_total": safe_float(active_gradbudget_loss_parts["weighted_struct_total"]),
+                            "struct_over_seg": safe_div(active_gradbudget_loss_parts["weighted_struct_total"], seg_loss),
+                            "weighted_st_over_seg": safe_div(active_gradbudget_loss_parts["weighted_loss_st"], seg_loss),
+                            "weighted_rs_over_seg": safe_div(active_gradbudget_loss_parts["weighted_loss_rs"], seg_loss),
+                            "weighted_chunk_over_seg": safe_div(active_gradbudget_loss_parts["weighted_loss_chunk_align"], seg_loss),
+                            "gamma_aux_over_seg": safe_div(active_gradbudget_loss_parts["weighted_struct_total"], seg_loss),
+                        })
+                    elif adaptive_v7_enabled:
                         eps = float(adaptive_v7_cfg["eps"])
                         beta = float(adaptive_v7_cfg["beta"])
                         gamma = float(adaptive_v7_cfg["gamma"])
@@ -1547,7 +2316,7 @@ def main():
                             diagnostic_parameters,
                             adaptive_v2_cfg,
                         )
-                    if not adaptive_v7_enabled and not adaptive_v6_enabled:
+                    if not adaptive_norm_balanced_enabled and not adaptive_gradnorm_enabled and not adaptive_gradbudget_align_enabled and not adaptive_v7_enabled and not adaptive_v6_enabled:
                         structxlip_loss = (
                             active_struct_lambdas["lambda_st"] * loss_st_raw
                             + active_struct_lambdas["lambda_rs"] * loss_rs_raw
@@ -1570,7 +2339,11 @@ def main():
                 loss_st_tensor = struct_loss_tensors.get("loss_st", zero)
                 loss_rs_tensor = struct_loss_tensors.get("loss_rs", zero)
                 loss_chunk_tensor = struct_loss_tensors.get("loss_chunk_align", zero)
-                if (adaptive_v7_enabled or adaptive_v6_enabled) and active_v6_norm_losses is not None:
+                if (adaptive_norm_balanced_enabled or adaptive_gradnorm_enabled or adaptive_gradbudget_align_enabled) and active_gradbudget_loss_parts is not None:
+                    weighted_loss_st = active_gradbudget_loss_parts["weighted_loss_st"]
+                    weighted_loss_rs = active_gradbudget_loss_parts["weighted_loss_rs"]
+                    weighted_loss_chunk = active_gradbudget_loss_parts["weighted_loss_chunk_align"]
+                elif (adaptive_v7_enabled or adaptive_v6_enabled) and active_v6_norm_losses is not None:
                     gamma = float(adaptive_v7_cfg["gamma"] if adaptive_v7_enabled else adaptive_v6_cfg["gamma"])
                     weighted_loss_st = gamma * lambda_st * active_v6_norm_losses["norm_loss_st"]
                     weighted_loss_rs = gamma * lambda_rs * active_v6_norm_losses["norm_loss_rs"]

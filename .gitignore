@@ -35,3 +35,10 @@ analysis/
 abalation/
 
 data/SKETCHY_structxlip_seg_train_90pct_seed42.json
+
+# Local datasets and generated experiment artifacts
+Sketchy_images.tar.gz
+adaptive_strategy.tar.gz
+adaptive_related_files.zip
+comparison_plots/
+adapive_strategy/
